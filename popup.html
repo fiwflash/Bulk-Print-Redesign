@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <style>
+        body { 
+            width: 100%; min-height: 100vh; 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            background-color: #f1f5f9; margin: 0; padding: 16px; box-sizing: border-box;
+        }
+        * { box-sizing: border-box; }
+        textarea::-webkit-scrollbar { display: none; }
+
+        .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+        .header h1 { font-size: 20px; font-weight: bold; color: #dc2626; margin: 0; }
+        .status-dot { width: 12px; height: 12px; border-radius: 50%; background-color: #cbd5e1; }
+        .status-dot.online { background-color: #22c55e; }
+        .status-dot.offline { background-color: #ef4444; }
+
+        .card { background: white; padding: 12px; border-radius: 12px; box-shadow: 0 1px 2px rgba(0,0,0,0.05); border: 1px solid #e2e8f0; margin-bottom: 12px; transition: all 0.2s;}
+        label { display: block; font-size: 11px; font-weight: bold; color: #64748b; margin-bottom: 6px; text-transform: uppercase; }
+        
+        input, select, textarea { 
+            width: 100%; padding: 8px 12px; font-size: 13px; border: 1px solid #e2e8f0; 
+            border-radius: 8px; background-color: #f8fafc; outline: none; font-family: inherit; transition: all 0.2s; 
+        }
+        input:focus, select:focus, textarea:focus { background-color: white; border-color: #f87171; box-shadow: 0 0 0 2px rgba(248, 113, 113, 0.2); }
+        textarea { height: 80px; resize: none; }
+        
+        .flex-row { display: flex; gap: 8px; }
+        .flex-row select { flex: 1; cursor: pointer; }
+        .btn-icon { background: #f1f5f9; border: 1px solid #e2e8f0; border-radius: 8px; cursor: pointer; padding: 0 12px; }
+        
+        .drop-zone { border: 2px dashed #cbd5e1; border-radius: 10px; transition: all 0.2s; position: relative;}
+        .drop-zone.drag-over { border-color: #dc2626; background-color: #fee2e2; }
+        
+        .preview-container { margin-top: 8px; display: flex; gap: 8px; overflow-x: auto; display: none; }
+        .preview-container.active { display: flex; }
+        .preview-img { height: 48px; width: auto; border-radius: 4px; border: 1px solid #cbd5e1; }
+
+        .btn-main { 
+            width: 100%; background-color: #dc2626; color: white; font-weight: bold; 
+            padding: 14px; border: none; border-radius: 12px; cursor: pointer; transition: all 0.2s; box-shadow: 0 4px 6px -1px rgba(220, 38, 38, 0.3); margin-top: 4px;
+        }
+        .btn-main:hover { background-color: #b91c1c; }
+        .btn-secondary {
+            width: 100%; background-color: #e2e8f0; color: #475569; font-weight: bold; 
+            padding: 10px; border: none; border-radius: 12px; cursor: pointer; transition: all 0.2s; margin-top: 8px;
+        }
+        .btn-secondary:hover { background-color: #cbd5e1; }
+
+        .status-text { margin-top: 16px; text-align: center; font-size: 11px; font-weight: bold; font-style: italic; color: #94a3b8; }
+        .status-text.info { color: #3b82f6; }
+        .status-text.success { color: #16a34a; }
+        .status-text.error { color: #ef4444; }
+
+        #inputSection.hidden { display: none; }
+        #reviewSection { display: none; }
+        #reviewSection.active { display: block; }
+
+        .review-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px;}
+        .review-field label { font-size: 10px; color: #64748b; margin-bottom: 2px; }
+        .review-field input { padding: 6px 8px; font-size: 12px; }
+        .review-field.full { grid-column: span 2; }
+
+        /* Address Book Styles */
+        .address-book-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 8px 10px;
+            background: white;
+            border: 1px solid #e2e8f0;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.15s ease;
+            font-size: 11px;
+            margin-bottom: 4px;
+        }
+        .address-book-item:hover {
+            background: #eff6ff;
+            border-color: #bfdbfe;
+        }
+        .delete-sender-btn {
+            background: none;
+            border: none;
+            color: #ef4444;
+            cursor: pointer;
+            font-size: 16px;
+            padding: 4px 8px;
+            margin-left: 8px;
+            border-radius: 4px;
+            flex-shrink: 0;
+            transition: all 0.15s ease;
+        }
+        .delete-sender-btn:hover {
+            background: #fee2e2;
+        }
+        .tab-btn {
+            background: transparent;
+            color: #475569;
+            border: none;
+            border-radius: 8px;
+            font-size: 12px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.2s;
+            padding: 8px;
+        }
+        .tab-btn.active {
+            background: white;
+            color: #dc2626;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>ThaiPost Bulk Print</h1>
+        <div id="modelStatus" class="status-dot"></div>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- MAIN INPUT SECTION -->
+    <!-- ========================================== -->
+    <div id="inputSection">
+        <!-- API Key Card -->
+        <div class="card" style="margin-bottom: 12px; padding-bottom: 8px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <label style="margin: 0;">🔑 ตั้งค่าระบบ</label>
+                <div class="flex-row" style="width: 150px;">
+                    <select id="modelSelect" style="padding: 4px 8px; font-size: 11px;"><option value="">Loading Models...</option></select>
+                    <button id="refreshModels" class="btn-icon" style="padding: 0 8px;">🔄</button>
+                </div>
+            </div>
+            <input type="password" id="apiKey" placeholder="Enter Gemini API Key..." style="margin-top: 8px;">
+        </div>
+
+        <!-- Input Mode Tab Switcher -->
+        <div class="card" style="padding: 4px; display: flex; gap: 4px; background: #e2e8f0; border-radius: 10px; margin-bottom: 12px;">
+            <button id="tabSeparateBtn" class="tab-btn active" style="flex: 1; padding: 8px; border: none; border-radius: 8px; font-size: 12px; font-weight: bold; cursor: pointer; transition: all 0.2s;">แยกช่องผู้ส่ง/ผู้รับ</button>
+            <button id="tabCombinedBtn" class="tab-btn" style="flex: 1; padding: 8px; border: none; border-radius: 8px; font-size: 12px; font-weight: bold; cursor: pointer; transition: all 0.2s;">รวมในช่องเดียว</button>
+        </div>
+
+        <!-- Combined Sender/Receiver Card -->
+        <div class="card drop-zone" id="combinedZone" style="background: #f0fdf4; border-color: #bbf7d0; display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <label style="margin-bottom: 0; color: #166534;">📝 ข้อมูลทั้งหมด (รวมผู้ส่งและผู้รับ)</label>
+                <button id="clearCombinedBtn" style="background: none; border: none; cursor: pointer; font-size: 11px; color: #ef4444; padding: 2px 6px; border-radius: 4px;">🗑️ ล้าง</button>
+            </div>
+            <textarea id="combinedInput" placeholder="แปะข้อความผู้ส่งและผู้รับรวมกันในช่องนี้ได้เลย (Gemini จะสกัดแยกให้เองอัตโนมัติ)..." style="height: 180px;"></textarea>
+            <div id="combinedPreview" class="preview-container"></div>
+        </div>
+
+        <!-- Sender Card -->
+        <div class="card drop-zone" id="senderZone" style="background: #eff6ff; border-color: #bfdbfe;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <label style="margin-bottom: 0; color: #1e40af;">📦 1. ข้อมูลผู้ส่ง (จำอัตโนมัติ)</label>
+                <button id="clearSenderBtn" style="background: none; border: none; cursor: pointer; font-size: 11px; color: #ef4444; padding: 2px 6px; border-radius: 4px;">🗑️ ล้าง</button>
+            </div>
+            <textarea id="senderInput" placeholder="แปะข้อความที่อยู่ร้าน หรือ ลากรูปนามบัตร/สลิป มาวางที่นี่..." style="height: 60px;"></textarea>
+            <div id="senderPreview" class="preview-container"></div>
+            
+            <!-- 📒 SENDER ADDRESS BOOK IN INPUT SECTION -->
+            <div id="senderAddressBook" style="margin-top: 12px; padding-top: 12px; border-top: 2px solid #bfdbfe;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <label style="margin: 0; color: #0284c7; font-size: 11px;">📒 สมุดจดผู้ส่งที่เคยใช้</label>
+                    <button id="toggleAddressBookBtn" style="background: none; border: none; font-size: 10px; color: #64748b; cursor: pointer; padding: 2px 6px; border-radius: 4px;" onmouseover="this.style.background='#e2e8f0'" onmouseout="this.style.background='none'">▶ แสดง</button>
+                </div>
+                <input type="text" id="senderAddressBookSearch" placeholder="ค้นหาชื่อเรียก ชื่อ เบอร์ ที่อยู่ หรือรหัสไปรษณีย์..." style="display:none; margin-bottom:8px;">
+                <div id="addressBookList" style="display: none; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto;">
+                    <div style="color: #94a3b8; font-size: 11px; text-align: center; padding: 8px 0;">ยังไม่มีผู้ส่งที่บันทึกไว้</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Receiver Card -->
+        <div class="card drop-zone" id="receiverZone" style="background: #fdf4ff; border-color: #f5d0fe;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                <label style="margin-bottom: 0; color: #c026d3;">👥 2. ผู้รับ (โยนแชทลูกค้ากี่คนก็ได้)</label>
+                <button id="clearReceiverBtn" style="background: none; border: none; cursor: pointer; font-size: 11px; color: #ef4444; padding: 2px 6px; border-radius: 4px;">🗑️ ล้าง</button>
+            </div>
+            <textarea id="receiverInput" placeholder="ก๊อปปี้แชทลูกค้ามาแปะต่อกัน หรือลากสลิปที่อยู่หลายๆ รูปมาวางที่นี่..." style="height: 120px;"></textarea>
+            <div id="receiverPreview" class="preview-container"></div>
+        </div>
+
+        <!-- Action Buttons -->
+        <button id="processBtn" class="btn-main">✨ วิเคราะห์ข้อมูล (สกัดรายชื่อลูกค้า)</button>
+        <button id="skipToReviewBtn" class="btn-secondary" type="button">ข้ามไปหน้าตรวจสอบ / กรอกเอง</button>
+        <button id="clearAllBtn" class="btn-secondary" style="background-color: transparent; border: 1px solid #cbd5e1; color: #ef4444;">🗑️ ล้างข้อมูลทั้งหมด</button>
+    </div>
+
+    <!-- ========================================== -->
+    <!-- REVIEW VALIDATION SECTION -->
+    <!-- ========================================== -->
+    <div id="reviewSection">
+        <div style="background: #eff6ff; padding: 10px; border-radius: 8px; margin-bottom: 12px; border: 1px solid #bfdbfe;">
+            <span style="font-size: 12px; font-weight: bold; color: #1e40af;">ตรวจสอบและแก้ไขข้อมูลก่อนพิมพ์</span>
+        </div>
+
+        <!-- Sender Review Card -->
+        <div class="card">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <label style="margin: 0;">📦 ผู้ส่ง (Sender)</label>
+                <button id="validateSenderBtn" style="background:#dbeafe; border:1px solid #93c5fd; color:#1e40af; font-size:10px; padding:4px 8px; border-radius:6px; cursor:pointer; font-weight:bold;">
+                    🔍 ตรวจสอบ
+                </button>
+            </div>
+            <div class="review-grid">
+                <div class="review-field"><label>ชื่อผู้ส่ง</label><input type="text" id="rev_sname"></div>
+                <div class="review-field"><label>เบอร์โทรผู้ส่ง</label><input type="text" id="rev_stel"></div>
+                <div class="review-field full" style="display:grid; grid-template-columns: 3fr 1fr; gap: 8px;">
+                    <div><label>ที่อยู่ผู้ส่ง</label><textarea id="rev_saddress" style="height: 40px;"></textarea></div>
+                    <div><label>รหัสไปรษณีย์</label><input type="text" id="rev_spostcode" style="height: 40px; text-align:center; font-weight:bold; font-size:14px; border-color:#3b82f6;"></div>
+                </div>
+            </div>
+            <div class="validate-result" id="validateSenderResult" style="display:none; margin-top:8px; padding:10px; border-radius:6px; font-size:11px; line-height:1.6; white-space: pre-line;">
+                <!-- ผลการตรวจสอบผู้ส่งจะแสดงที่นี่ -->
+            </div>
+            
+            <!-- 📒 SENDER ADDRESS BOOK IN REVIEW SECTION -->
+            <div id="senderAddressBookReview" style="margin-top: 12px; padding-top: 12px; border-top: 2px solid #e2e8f0;">
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                    <label style="margin: 0; color: #0284c7; font-size: 11px;">📒 สมุดจดผู้ส่งที่เคยใช้</label>
+                    <button id="toggleAddressBookBtnReview" style="background: none; border: none; font-size: 10px; color: #64748b; cursor: pointer; padding: 2px 6px; border-radius: 4px;" onmouseover="this.style.background='#e2e8f0'" onmouseout="this.style.background='none'">▶ แสดง</button>
+                </div>
+                <input type="text" id="senderAddressBookSearchReview" placeholder="ค้นหาชื่อเรียก ชื่อ เบอร์ ที่อยู่ หรือรหัสไปรษณีย์..." style="display:none; margin-bottom:8px;">
+                <div id="addressBookListReview" style="display: none; flex-direction: column; gap: 4px; max-height: 200px; overflow-y: auto;">
+                    <div style="color: #94a3b8; font-size: 11px; text-align: center; padding: 8px 0;">ยังไม่มีผู้ส่งที่บันทึกไว้</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Add More Receivers In Review -->
+        <div class="card drop-zone" id="reviewAddReceiverZone" style="background:#f0fdf4; border-color:#bbf7d0;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <label style="margin-bottom:0; color:#166534;">➕ เพิ่มลูกค้าต่อท้าย</label>
+                <button id="clearReviewAddReceiverBtn" style="background:none; border:none; cursor:pointer; font-size:11px; color:#ef4444; padding:2px 6px; border-radius:4px;">🗑️ ล้าง</button>
+            </div>
+            <textarea id="reviewAddReceiverInput" placeholder="แปะข้อความลูกค้าเพิ่มได้หลายคน หรือวาง/ลากรูปภาพผู้รับ 1 รูป แล้วกดเพิ่มเข้ารายการ..." style="height:80px;"></textarea>
+            <div id="reviewAddReceiverPreview" class="preview-container"></div>
+            <button id="addReceiverFromReviewBtn" class="btn-secondary" style="background:#16a34a; color:white; margin-top:8px;">➕ เพิ่มเข้ารายการ</button>
+        </div>
+
+        <!-- Frequent Receiver Directory -->
+        <div class="card" id="savedReceiverDirectory" style="background:#fff7ed; border-color:#fed7aa;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-bottom:8px;">
+                <label style="margin:0; color:#c2410c;">สมุดจดผู้รับที่เคยใช้</label>
+                <div style="display:flex; align-items:center; gap:6px;">
+                    <span id="receiverDirectoryCount" style="font-size:10px; color:#9a3412; font-weight:bold;">0 รายการ</span>
+                    <button id="toggleReceiverDirectoryBtn" type="button" style="background:none; border:none; font-size:10px; color:#9a3412; cursor:pointer; padding:2px 6px; border-radius:4px;">▶ แสดง</button>
+                </div>
+            </div>
+            <input type="text" id="receiverDirectorySearch" placeholder="ค้นหาชื่อเล่น ชื่อ เบอร์ ที่อยู่ หรือรหัสไปรษณีย์..." style="display:none; margin-bottom:8px;">
+            <div id="receiverDirectoryList" style="display:none; flex-direction:column; gap:6px; max-height:220px; overflow-y:auto;">
+                <div style="color:#9ca3af; font-size:11px; text-align:center; padding:10px 0;">ยังไม่มีผู้รับที่บันทึกไว้</div>
+            </div>
+        </div>
+
+        <!-- Receivers List Review -->
+        <div id="receiversList">
+            <!-- การ์ดรายชื่อลูกค้าจะถูกสร้างและนำมาแปะตรงนี้อัตโนมัติ -->
+        </div>
+
+        <!-- Action Buttons -->
+        
+        <div class="card" id="printPresetCard" style="background:#f8fafc; border-color:#cbd5e1;">
+            <label style="margin-bottom:6px; color:#1e40af;">ตั้งค่าก่อนพิมพ์</label>
+            <div class="review-grid">
+                <div class="review-field full">
+                    <label>ขนาดกระดาษ</label>
+                    <select id="printPaperPresetSelect">
+                        <option value="10x10">10x10 cm</option>
+                        <option value="4x6">4x6 Shipping Label</option>
+                        <option value="a6">A6</option>
+                        <option value="a5">A5</option>
+                        <option value="a4-2up">A4 2-up</option>
+                        <option value="a4-box">A4 แนวนอน - จ่าหน้ากล่อง</option>
+                    </select>
+                </div>
+            </div>
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                <button id="printLastUsedBtn" class="btn-secondary" type="button">พิมพ์แบบล่าสุด</button>
+                <button id="printOpenEditorBtn" class="btn-main" type="button" style="margin-top:0;">เปิดตัวอย่าง / แก้ไข</button>
+            </div>
+        </div>
+        <button id="printBtn" class="btn-main" style="background-color: #16a34a; box-shadow: 0 4px 6px -1px rgba(22, 163, 74, 0.3);">🖨️ เปิดหน้าต่างพิมพ์</button>
+        <button id="cancelBtn" class="btn-secondary">ย้อนกลับ / แก้ไขใหม่</button>
+    </div>
+
+    <!-- Status Text -->
+    <div id="status" class="status-text">พร้อมทำงาน! ลากรูป หรือแปะข้อความได้เลย</div>
+
+    <!-- ========================================== -->
+    <!-- HISTORY SECTION -->
+    <!-- ========================================== -->
+    <div id="historySection" style="margin-top: 16px; padding: 12px; background: #f8fafc; border-radius: 12px; border: 1px solid #e2e8f0;">
+        <label style="color: #475569; font-size: 11px; margin-bottom: 8px; display: flex; justify-content: space-between; align-items: center;">
+            📜 ประวัติการสแกน
+            <button id="clearHistoryBtn" style="background: none; border: none; font-size: 10px; color: #ef4444; cursor: pointer; padding: 4px 8px; border-radius: 4px;" onmouseover="this.style.background='#fee2e2'" onmouseout="this.style.background='none'">🗑️ ลบประวัติ</button>
+        </label>
+        <div id="historyList" style="display: flex; flex-direction: column; gap: 6px;">
+            <!-- ประวัติจะถูกสร้างโดย JS -->
+        </div>
+        <button id="showMoreHistoryBtn" class="btn-secondary" type="button" style="display:none; margin-top:8px;">แสดงเพิ่มเติม</button>
+    </div>
+
+    <script src="popup.js"></script>
+</body>
+</html>

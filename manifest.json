@@ -1,0 +1,29 @@
+{
+  "manifest_version": 3,
+  "name": "Printer Redesign",
+  "version": "1.0",
+  "description": "พิมพ์จ่าหน้า 10x10cm อัจฉริยะ สำหรับแม่ค้าออนไลน์",
+  "permissions": [
+    "storage",
+    "sidePanel"
+  ],
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "ThaiPost Print",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "side_panel": {
+    "default_path": "popup.html"
+  }
+}

@@ -1,0 +1,11 @@
+# Backup files
+*.bak
+
+# Archive files
+*.rar
+*.zip
+*.7z
+
+# OS generated files
+Thumbs.db
+.DS_Store
