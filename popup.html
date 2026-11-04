@@ -112,6 +112,49 @@
             color: #dc2626;
             box-shadow: 0 1px 3px rgba(0,0,0,0.1);
         }
+
+        /* Toast / Undo */
+        .toast {
+            position: fixed;
+            left: 12px;
+            right: 12px;
+            bottom: 12px;
+            z-index: 9999;
+            display: none;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 12px;
+            background: #1e293b;
+            color: #ffffff;
+            border-radius: 10px;
+            box-shadow: 0 8px 24px rgba(15, 23, 42, 0.25);
+            font-size: 12px;
+            line-height: 1.4;
+        }
+        .toast.show { display: flex; }
+        .toast-message { flex: 1; min-width: 0; }
+        .toast-action {
+            flex-shrink: 0;
+            background: #ffffff;
+            color: #1e293b;
+            border: 0;
+            border-radius: 6px;
+            padding: 5px 9px;
+            font-size: 11px;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        .toast-close {
+            flex-shrink: 0;
+            background: transparent;
+            border: 0;
+            color: #cbd5e1;
+            cursor: pointer;
+            font-size: 13px;
+            padding: 2px 4px;
+            border-radius: 4px;
+        }
+        .toast-close:hover { background: rgba(255,255,255,0.12); }
     </style>
 </head>
 <body>
@@ -187,7 +230,7 @@
         <!-- Action Buttons -->
         <button id="processBtn" class="btn-main">✨ วิเคราะห์ข้อมูล (สกัดรายชื่อลูกค้า)</button>
         <button id="skipToReviewBtn" class="btn-secondary" type="button">ข้ามไปหน้าตรวจสอบ / กรอกเอง</button>
-        <button id="clearAllBtn" class="btn-secondary" style="background-color: transparent; border: 1px solid #cbd5e1; color: #ef4444;">🗑️ ล้างข้อมูลทั้งหมด</button>
+        <button id="clearAllBtn" class="btn-secondary" type="button" title="ล้างเฉพาะข้อความและรูปในช่องผู้ส่ง/ผู้รับ — ประวัติ สมุดจด และข้อมูลที่วิเคราะห์แล้วจะยังอยู่" style="background-color: transparent; border: 1px solid #cbd5e1; color: #ef4444;">🧹 ล้างข้อความที่ป้อน</button>
     </div>
 
     <!-- ========================================== -->
@@ -304,6 +347,8 @@
         </div>
         <button id="showMoreHistoryBtn" class="btn-secondary" type="button" style="display:none; margin-top:8px;">แสดงเพิ่มเติม</button>
     </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
 
     <script src="popup.js"></script>
 </body>

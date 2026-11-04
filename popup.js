@@ -4,12 +4,26 @@ let combinedImageData = null;
 let reviewAddReceiverImageData = null;
 let receiverList = [];
 let activeTab = 'separate';
+let currentView = 'input';
 let historyExpanded = false;
 
 const HISTORY_COLLAPSED_LIMIT = 3;
 const MAX_SCAN_HISTORY = 50;
 const MAX_SAVED_SENDERS = 50;
 const MAX_SAVED_RECEIVERS = 500;
+
+// Draft storage keys: input and review are kept separate so clearing the
+// input boxes never destroys data that has already been analyzed.
+const INPUT_DRAFT_KEY = 'bulkPrintInputDraft';
+const REVIEW_DRAFT_KEY = 'bulkPrintReviewDraft';
+const LEGACY_CACHE_KEY = 'bulkPrintCache';
+const LEGACY_SENDER_TEXT_KEY = 'savedSenderText';
+
+let isRestoringDrafts = false;
+let draftSaveTimer = null;
+let pendingDraftSave = { input: false, review: false };
+let toastTimer = null;
+let isProcessing = false;
 
 // ==========================================
 // 🗺️ DATABASE LOADING (จาก Gist)
@@ -703,10 +717,24 @@ function createSynthesizedHistoryData(data) {
 }
 
 // ==========================================
-// 💾 CACHE SYSTEM (chrome.storage.local)
+// 💾 DRAFT STORAGE (input / review แยกกัน)
 // ==========================================
-function saveToCache() {
-    const cacheData = {
+function hasStorage() {
+    return typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local;
+}
+
+function collectInputDraft() {
+    return {
+        senderText: document.getElementById('senderInput')?.value || '',
+        receiverText: document.getElementById('receiverInput')?.value || '',
+        combinedText: document.getElementById('combinedInput')?.value || '',
+        activeTab: activeTab,
+        timestamp: Date.now()
+    };
+}
+
+function collectReviewDraft() {
+    return {
         sender: {
             name: document.getElementById('rev_sname')?.value || '',
             tel: document.getElementById('rev_stel')?.value || '',
@@ -720,72 +748,344 @@ function saveToCache() {
             postcode: receiver.postcode || '',
             note: receiver.note || ''
         })),
-        activeTab: activeTab,
+        view: currentView,
         timestamp: Date.now()
     };
-    
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.set({ 'bulkPrintCache': cacheData }, () => {
-            console.log('✅ Cache saved');
-        });
+}
+
+function saveInputDraftNow() {
+    if (isRestoringDrafts || !hasStorage()) return;
+    chrome.storage.local.set({ [INPUT_DRAFT_KEY]: collectInputDraft() });
+}
+
+function saveReviewDraftNow() {
+    if (isRestoringDrafts || !hasStorage()) return;
+    chrome.storage.local.set({ [REVIEW_DRAFT_KEY]: collectReviewDraft() });
+}
+
+function flushDraftSave() {
+    if (isRestoringDrafts || !hasStorage()) return;
+    clearTimeout(draftSaveTimer);
+    draftSaveTimer = null;
+
+    const payload = {};
+    if (pendingDraftSave.input) payload[INPUT_DRAFT_KEY] = collectInputDraft();
+    if (pendingDraftSave.review) payload[REVIEW_DRAFT_KEY] = collectReviewDraft();
+    pendingDraftSave = { input: false, review: false };
+
+    if (Object.keys(payload).length > 0) {
+        chrome.storage.local.set(payload);
     }
 }
 
-function loadCache() {
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.get(['bulkPrintCache'], (result) => {
-            if (result && result.bulkPrintCache) {
-                const cache = result.bulkPrintCache;
-                
-                if (cache.activeTab) {
-                    activeTab = cache.activeTab;
-                    switchTab(activeTab);
-                }
-                
-                const status = document.getElementById('status');
-                status.innerText = `📂 โหลดข้อความล่าสุดจากแคช (${new Date(cache.timestamp).toLocaleString('th-TH')})`;
-                status.className = "status-text info";
-            }
-        });
+function scheduleDraftSave({ input = false, review = false } = {}) {
+    if (isRestoringDrafts) return;
+    pendingDraftSave.input = pendingDraftSave.input || input;
+    pendingDraftSave.review = pendingDraftSave.review || review;
+    clearTimeout(draftSaveTimer);
+    draftSaveTimer = setTimeout(flushDraftSave, 300);
+}
+
+// ใช้กับการเปลี่ยนแปลงเชิงโครงสร้าง (เพิ่ม/ลบ/โหลด) ที่อยากบันทึกทันที
+function saveToCache() {
+    if (isRestoringDrafts || !hasStorage()) return;
+    clearTimeout(draftSaveTimer);
+    draftSaveTimer = null;
+    pendingDraftSave = { input: false, review: false };
+    chrome.storage.local.set({
+        [INPUT_DRAFT_KEY]: collectInputDraft(),
+        [REVIEW_DRAFT_KEY]: collectReviewDraft()
+    });
+}
+
+function loadDrafts() {
+    if (!hasStorage()) {
+        applyTabUI(activeTab);
+        return;
     }
+
+    isRestoringDrafts = true;
+
+    chrome.storage.local.get(
+        [INPUT_DRAFT_KEY, REVIEW_DRAFT_KEY, LEGACY_CACHE_KEY, LEGACY_SENDER_TEXT_KEY],
+        (result) => {
+            let restoredInput = false;
+            let restoredReview = false;
+
+            try {
+                const inputDraft = result[INPUT_DRAFT_KEY];
+
+                if (inputDraft) {
+                    const senderInput = document.getElementById('senderInput');
+                    const receiverInput = document.getElementById('receiverInput');
+                    const combinedInput = document.getElementById('combinedInput');
+                    if (senderInput) senderInput.value = inputDraft.senderText || '';
+                    if (receiverInput) receiverInput.value = inputDraft.receiverText || '';
+                    if (combinedInput) combinedInput.value = inputDraft.combinedText || '';
+                    if (inputDraft.activeTab === 'separate' || inputDraft.activeTab === 'combined') {
+                        activeTab = inputDraft.activeTab;
+                    }
+                    restoredInput = Boolean(
+                        (inputDraft.senderText || '').trim() ||
+                        (inputDraft.receiverText || '').trim() ||
+                        (inputDraft.combinedText || '').trim()
+                    );
+                } else {
+                    if (result[LEGACY_SENDER_TEXT_KEY]) {
+                        const senderInput = document.getElementById('senderInput');
+                        if (senderInput) senderInput.value = result[LEGACY_SENDER_TEXT_KEY];
+                        restoredInput = Boolean(result[LEGACY_SENDER_TEXT_KEY].trim());
+                    }
+                    const legacyTab = result[LEGACY_CACHE_KEY]?.activeTab;
+                    if (legacyTab === 'separate' || legacyTab === 'combined') {
+                        activeTab = legacyTab;
+                    }
+                }
+
+                applyTabUI(activeTab);
+
+                const reviewDraft = result[REVIEW_DRAFT_KEY] || result[LEGACY_CACHE_KEY];
+                if (reviewDraft) {
+                    const sender = reviewDraft.sender || {};
+                    const receivers = Array.isArray(reviewDraft.receivers) ? reviewDraft.receivers : [];
+                    const hasReviewData = receivers.length > 0 || ['name', 'tel', 'address', 'postcode']
+                        .some((key) => String(sender[key] || '').trim());
+
+                    if (hasReviewData) {
+                        populateReviewForm({ sender, receivers });
+                        restoredReview = true;
+
+                        if (reviewDraft.view === 'review' && receivers.length > 0) {
+                            showReviewSection({ scrollTop: false, persist: false });
+                        }
+                    }
+                }
+            } finally {
+                isRestoringDrafts = false;
+            }
+
+            // แปลงข้อมูลจาก key เก่าเป็นรูปแบบใหม่ แล้วค่อยลบ key เก่า
+            const legacyKeys = [];
+            if (result[LEGACY_SENDER_TEXT_KEY]) legacyKeys.push(LEGACY_SENDER_TEXT_KEY);
+            if (result[LEGACY_CACHE_KEY]) legacyKeys.push(LEGACY_CACHE_KEY);
+
+            if (legacyKeys.length > 0) {
+                const needsNewDrafts = !result[INPUT_DRAFT_KEY] || !result[REVIEW_DRAFT_KEY];
+                if (needsNewDrafts) {
+                    chrome.storage.local.set({
+                        [INPUT_DRAFT_KEY]: collectInputDraft(),
+                        [REVIEW_DRAFT_KEY]: collectReviewDraft()
+                    }, () => {
+                        chrome.storage.local.remove(legacyKeys);
+                    });
+                } else {
+                    chrome.storage.local.remove(legacyKeys);
+                }
+            }
+
+            const status = document.getElementById('status');
+            if (!status) return;
+
+            if (restoredReview && restoredInput) {
+                status.innerText = currentView === 'review'
+                    ? `📂 กู้คืนงานล่าสุดแล้ว (${receiverList.length} ผู้รับ) และข้อความที่ป้อน`
+                    : `📂 กู้คืนงานล่าสุดแล้ว (${receiverList.length} ผู้รับ) และข้อความที่ป้อน — กด "ข้ามไปหน้าตรวจสอบ" เพื่อทำต่อ`;
+                status.className = 'status-text info';
+            } else if (restoredReview) {
+                status.innerText = currentView === 'review'
+                    ? `📂 กู้คืนงานล่าสุดแล้ว (${receiverList.length} ผู้รับ)`
+                    : `📂 กู้คืนงานล่าสุดแล้ว (${receiverList.length} ผู้รับ) — กด "ข้ามไปหน้าตรวจสอบ" เพื่อทำต่อ`;
+                status.className = 'status-text info';
+            } else if (restoredInput) {
+                status.innerText = '📂 กู้คืนข้อความที่ป้อนล่าสุดแล้ว';
+                status.className = 'status-text info';
+            }
+        }
+    );
 }
 
 function setupAutoCache() {
-    const fieldsToWatch = ['rev_sname', 'rev_stel', 'rev_saddress', 'rev_spostcode'];
-    fieldsToWatch.forEach(id => {
+    const reviewFields = ['rev_sname', 'rev_stel', 'rev_saddress', 'rev_spostcode'];
+    reviewFields.forEach((id) => {
         const el = document.getElementById(id);
-        if (el) {
-            el.addEventListener('input', () => {
-                saveToCache();
-            });
-        }
+        if (!el) return;
+        el.addEventListener('input', () => {
+            scheduleDraftSave({ review: true });
+            resetSenderValidation();
+        });
+        el.addEventListener('blur', flushDraftSave);
     });
-    
-    const senderInput = document.getElementById('senderInput');
-    const receiverInput = document.getElementById('receiverInput');
-    const combinedInput = document.getElementById('combinedInput');
-    
-    if (senderInput) {
-        senderInput.addEventListener('input', () => {
-            saveToCache();
-        });
+
+    const inputFields = ['senderInput', 'receiverInput', 'combinedInput'];
+    inputFields.forEach((id) => {
+        const el = document.getElementById(id);
+        if (!el) return;
+        el.addEventListener('input', () => scheduleDraftSave({ input: true }));
+        el.addEventListener('blur', flushDraftSave);
+    });
+}
+
+// ==========================================
+// 🧹 CLEAR INPUT DRAFTS
+// ==========================================
+function showToast(message, options = {}) {
+    const toast = document.getElementById('toast');
+    if (!toast) {
+        const status = document.getElementById('status');
+        if (status) {
+            status.innerText = message;
+            status.className = 'status-text info';
+        }
+        return;
     }
-    if (receiverInput) {
-        receiverInput.addEventListener('input', () => {
-            saveToCache();
+
+    toast.innerHTML = '';
+
+    const messageEl = document.createElement('span');
+    messageEl.className = 'toast-message';
+    messageEl.textContent = message;
+    toast.appendChild(messageEl);
+
+    if (options.actionLabel && typeof options.onAction === 'function') {
+        const actionBtn = document.createElement('button');
+        actionBtn.type = 'button';
+        actionBtn.className = 'toast-action';
+        actionBtn.textContent = options.actionLabel;
+        actionBtn.addEventListener('click', () => {
+            hideToast();
+            options.onAction();
         });
+        toast.appendChild(actionBtn);
     }
-    if (combinedInput) {
-        combinedInput.addEventListener('input', () => {
-            saveToCache();
-        });
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'toast-close';
+    closeBtn.setAttribute('aria-label', 'ปิด');
+    closeBtn.textContent = '✕';
+    closeBtn.addEventListener('click', hideToast);
+    toast.appendChild(closeBtn);
+
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(hideToast, options.duration || 5000);
+}
+
+function hideToast() {
+    clearTimeout(toastTimer);
+    toastTimer = null;
+    const toast = document.getElementById('toast');
+    if (toast) toast.classList.remove('show');
+}
+
+function getZoneImageData(zone) {
+    if (zone === 'sender') return senderImageData;
+    if (zone === 'combined') return combinedImageData;
+    return receiverImageData;
+}
+
+// เก็บ snapshot เฉพาะช่องที่จะล้าง เพื่อไม่ให้การกด "เลิกทำ" ไปย้อนแก้ไขช่องอื่น
+function captureInputSnapshot(zones) {
+    const values = {};
+    const images = {};
+
+    zones.forEach((zone) => {
+        const input = document.getElementById(zone + 'Input');
+        values[zone] = input ? input.value : '';
+        images[zone] = getZoneImageData(zone);
+    });
+
+    return { values, images };
+}
+
+function restoreInputSnapshot(snapshot) {
+    if (!snapshot) return;
+
+    Object.entries(snapshot.values).forEach(([zone, value]) => {
+        const input = document.getElementById(zone + 'Input');
+        if (input) input.value = value;
+    });
+
+    Object.entries(snapshot.images).forEach(([zone, data]) => {
+        setZoneImageData(zone, data);
+    });
+
+    saveInputDraftNow();
+    showToast('คืนข้อความที่ล้างแล้ว');
+}
+
+function clearInputZones(zones, options = {}) {
+    const snapshot = captureInputSnapshot(zones);
+    const hasContent = zones.some((zone) => (
+        String(snapshot.values[zone] || '').trim() || Boolean(snapshot.images[zone])
+    ));
+
+    if (!hasContent) {
+        // ถ้ากำลังแสดงปุ่ม "เลิกทำ" อยู่ ให้คงไว้ ไม่ทับด้วยข้อความ "ไม่มีข้อความให้ล้าง"
+        const toast = document.getElementById('toast');
+        const hasActiveUndo = toast && toast.classList.contains('show') && toast.querySelector('.toast-action');
+        if (!hasActiveUndo) showToast('ไม่มีข้อความให้ล้าง');
+        return;
+    }
+
+    zones.forEach((zone) => clearInputZone(zone));
+
+    if (zones.includes('sender') && hasStorage()) {
+        chrome.storage.local.remove(LEGACY_SENDER_TEXT_KEY);
+    }
+
+    saveInputDraftNow();
+
+    const status = document.getElementById('status');
+    if (status) {
+        status.innerText = options.statusText || 'ล้างข้อความในช่องแล้ว — ข้อมูลที่วิเคราะห์ไว้ก่อนหน้านี้ยังอยู่';
+        status.className = 'status-text';
+    }
+
+    showToast(options.toastMessage || 'ล้างข้อความแล้ว', {
+        actionLabel: 'เลิกทำ',
+        onAction: () => restoreInputSnapshot(snapshot)
+    });
+}
+
+// ==========================================
+// 🔁 VALIDATION STATE RESET
+// ==========================================
+function resetSenderValidation() {
+    const resultDiv = document.getElementById('validateSenderResult');
+    if (resultDiv) {
+        resultDiv.style.display = 'none';
+        resultDiv.innerHTML = '';
     }
 }
 
-function clearCache() {
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.remove('bulkPrintCache');
+function resetReceiverValidation(index) {
+    const resultDiv = document.getElementById(`validateResult-${index}`);
+    if (resultDiv) {
+        resultDiv.style.display = 'none';
+        resultDiv.innerHTML = '';
     }
+    const btn = document.querySelector(`.validate-btn[data-index="${index}"]`);
+    if (btn) {
+        btn.innerHTML = '🔍 ตรวจสอบ';
+        btn.style.background = '#dbeafe';
+    }
+}
+
+// ==========================================
+// 🛡️ AI GUARD (กันกดซ้ำ / กันทับข้อมูล)
+// ==========================================
+const AI_BUTTON_IDS = ['processBtn', 'addReceiverFromReviewBtn'];
+
+function setProcessing(flag) {
+    isProcessing = flag;
+    AI_BUTTON_IDS.forEach((id) => {
+        const btn = document.getElementById(id);
+        if (btn) {
+            btn.disabled = flag;
+            btn.style.opacity = flag ? '0.55' : '';
+        }
+    });
 }
 
 // ==========================================
@@ -886,9 +1186,7 @@ function renderHistoryUI() {
                 
                 btn.onclick = () => {
                     populateReviewForm(item.data);
-                    document.getElementById('inputSection').classList.add('hidden');
-                    document.getElementById('reviewSection').classList.add('active');
-                    document.getElementById('historySection').style.display = 'none';
+                    showReviewSection({ scrollTop: true });
                     
                     const status = document.getElementById('status');
                     status.innerText = `📂 โหลดข้อมูลย้อนหลังจากประวัติ (${item.timestamp})`;
@@ -984,6 +1282,7 @@ function loadSenderToForm(senderData) {
                 `${senderData.name}\n${senderData.tel}\n${senderData.address}\n${senderData.postcode}`;
         }
         
+        resetSenderValidation();
         saveToCache();
         
         const status = document.getElementById('status');
@@ -1386,22 +1685,13 @@ function renderSavedReceiverDirectory() {
 // ⚙️ INITIALIZATION & SETTINGS
 // ==========================================
 if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-    chrome.storage.local.get(['geminiApiKey', 'selectedModel', 'savedSenderText'], (result) => {
+    chrome.storage.local.get(['geminiApiKey', 'selectedModel'], (result) => {
         if (result.geminiApiKey) { 
             document.getElementById('apiKey').value = result.geminiApiKey; 
             fetchAvailableModels(result.geminiApiKey, result.selectedModel); 
         }
-        if (result.savedSenderText) {
-            document.getElementById('senderInput').value = result.savedSenderText;
-        }
     });
 }
-
-document.getElementById('senderInput').addEventListener('input', (e) => {
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.set({ savedSenderText: e.target.value });
-    }
-});
 
 async function fetchAvailableModels(key, savedModel) {
     const select = document.getElementById('modelSelect');
@@ -1415,8 +1705,8 @@ async function fetchAvailableModels(key, savedModel) {
 
         // Define preferred model keys, human-friendly labels, and matching priority
         const modelDefinitions = [
-            { key: 'gemini-2.5-flash-lite', label: '🍃 Gemini 2.5 Flash-Lite (ประหยัดค่าใช้จ่ายสูงสุด)' },
-            { key: 'gemini-2.5-flash', label: '⚡ Gemini 2.5 Flash (แนะนำ - เร็วและแม่นยำสุด)' },
+            { key: 'gemini-2.5-flash-lite', label: '🍃 Gemini 2.5 Flash-Lite (แนะนำ - ประหยัดค่าใช้จ่ายสูงสุด)' },
+            { key: 'gemini-2.5-flash', label: '⚡ Gemini 2.5 Flash (เร็วและแม่นยำ)' },
             { key: 'gemini-2.0-flash-lite', label: '🍃 Gemini 2.0 Flash-Lite (ประหยัดค่าใช้จ่าย)' },
             { key: 'gemini-2.0-flash', label: '🚀 Gemini 2.0 Flash (ทำงานเร็วและเสถียร)' },
             { key: 'gemini-2.5-pro', label: '🧠 Gemini 2.5 Pro (ฉลาดสุด - เหมาะกับรูปไม่ชัด/ลายมือ)' },
@@ -1467,12 +1757,12 @@ async function fetchAvailableModels(key, savedModel) {
 
             // Set default if none selected
             if (!savedModel && select.options.length > 0) {
-                // Find and select 2.5 Flash if available, otherwise first item
-                const flash25Opt = Array.from(select.options).find(o => o.value.includes('gemini-2.5-flash') && !o.value.includes('lite'));
-                if (flash25Opt) {
-                    flash25Opt.selected = true;
+                // Find and select 2.5 Flash-Lite if available, otherwise first item
+                const flashLiteOpt = Array.from(select.options).find(o => o.value.includes('gemini-2.5-flash-lite'));
+                if (flashLiteOpt) {
+                    flashLiteOpt.selected = true;
                     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-                        chrome.storage.local.set({ selectedModel: flash25Opt.value });
+                        chrome.storage.local.set({ selectedModel: flashLiteOpt.value });
                     }
                 } else {
                     select.options[0].selected = true;
@@ -1509,50 +1799,83 @@ document.getElementById('refreshModels').addEventListener('click', () => {
 // ==========================================
 // 📸 DRAG & DROP (BOTH ZONES)
 // ==========================================
-const processImageFile = (file, zoneType) => {
-    if (file && file.type.startsWith('image/')) {
-        const reader = new FileReader();
-        reader.onload = (event) => {
-            const base64 = event.target.result;
-            const base64Data = base64.split(',')[1];
-            const previewDiv = document.getElementById(zoneType + 'Preview'); 
-            const input = document.getElementById(zoneType + 'Input');
-            
-            if (zoneType === 'sender') senderImageData = base64Data;
-            else if (zoneType === 'combined') combinedImageData = base64Data;
-            else if (zoneType === 'reviewAddReceiver') reviewAddReceiverImageData = base64Data;
-            else receiverImageData = base64Data;
+function setZoneImageData(zoneType, base64Data) {
+    if (zoneType === 'sender') senderImageData = base64Data;
+    else if (zoneType === 'combined') combinedImageData = base64Data;
+    else if (zoneType === 'reviewAddReceiver') reviewAddReceiverImageData = base64Data;
+    else receiverImageData = base64Data;
 
-            previewDiv.innerHTML = ''; 
-            const wrapper = document.createElement('div'); 
-            wrapper.style.position = 'relative'; 
-            wrapper.style.display = 'inline-block';
-            
-            const img = document.createElement('img'); 
-            img.src = base64; 
-            img.className = 'preview-img';
-            
-            const delBtn = document.createElement('button'); 
-            delBtn.innerText = '❌'; 
-            delBtn.style.position = 'absolute'; delBtn.style.top = '-8px'; delBtn.style.right = '-8px'; 
-            delBtn.style.background = 'white'; delBtn.style.border = '1px solid #e2e8f0'; 
-            delBtn.style.borderRadius = '50%'; delBtn.style.cursor = 'pointer'; delBtn.style.fontSize = '10px'; delBtn.style.padding = '4px';
+    renderZoneImagePreview(zoneType, base64Data);
+}
 
-            delBtn.addEventListener('click', () => {
-                if (zoneType === 'sender') senderImageData = null;
-                else if (zoneType === 'combined') combinedImageData = null;
-                else if (zoneType === 'reviewAddReceiver') reviewAddReceiverImageData = null;
-                else receiverImageData = null;
-                previewDiv.innerHTML = ''; 
-                previewDiv.classList.remove('active');
-                input.value = input.value.replace(/\[แนบรูปภาพแล้ว.*?\]/g, '').trim();
-            });
-            
-            wrapper.appendChild(img); wrapper.appendChild(delBtn); 
-            previewDiv.appendChild(wrapper); previewDiv.classList.add('active');
-        };
-        reader.readAsDataURL(file);
+function clearZoneImage(zoneType) {
+    setZoneImageData(zoneType, null);
+}
+
+function renderZoneImagePreview(zoneType, base64Data) {
+    const previewDiv = document.getElementById(zoneType + 'Preview');
+    if (!previewDiv) return;
+
+    previewDiv.innerHTML = '';
+
+    if (!base64Data) {
+        previewDiv.classList.remove('active');
+        return;
     }
+
+    const wrapper = document.createElement('div');
+    wrapper.style.position = 'relative';
+    wrapper.style.display = 'inline-block';
+
+    const img = document.createElement('img');
+    img.src = 'data:image/png;base64,' + base64Data;
+    img.className = 'preview-img';
+
+    const delBtn = document.createElement('button');
+    delBtn.type = 'button';
+    delBtn.innerText = '❌';
+    delBtn.setAttribute('aria-label', 'ลบรูปภาพที่แนบ');
+    delBtn.style.position = 'absolute';
+    delBtn.style.top = '-8px';
+    delBtn.style.right = '-8px';
+    delBtn.style.background = 'white';
+    delBtn.style.border = '1px solid #e2e8f0';
+    delBtn.style.borderRadius = '50%';
+    delBtn.style.cursor = 'pointer';
+    delBtn.style.fontSize = '10px';
+    delBtn.style.padding = '4px';
+
+    delBtn.addEventListener('click', () => {
+        clearZoneImage(zoneType);
+        const input = document.getElementById(zoneType + 'Input');
+        if (input) {
+            input.value = input.value.replace(/\[แนบรูปภาพแล้ว.*?\]/g, '').trim();
+        }
+        if (zoneType !== 'reviewAddReceiver') {
+            scheduleDraftSave({ input: true });
+        }
+    });
+
+    wrapper.appendChild(img);
+    wrapper.appendChild(delBtn);
+    previewDiv.appendChild(wrapper);
+    previewDiv.classList.add('active');
+}
+
+const processImageFile = (file, zoneType) => {
+    if (!file || !file.type.startsWith('image/')) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+        const base64 = event.target.result;
+        const base64Data = base64.split(',')[1];
+        setZoneImageData(zoneType, base64Data);
+
+        if (zoneType !== 'reviewAddReceiver') {
+            scheduleDraftSave({ input: true });
+        }
+    };
+    reader.readAsDataURL(file);
 };
 
 const setupDragAndDrop = (zoneId, inputId, zoneType) => {
@@ -1570,6 +1893,9 @@ const setupDragAndDrop = (zoneId, inputId, zoneType) => {
             const textData = e.dataTransfer.getData('text/plain'); 
             if (textData) input.value = input.value + (input.value ? '\n' : '') + textData;
         }
+        if (zoneType !== 'reviewAddReceiver') {
+            scheduleDraftSave({ input: true });
+        }
     });
     input.addEventListener('paste', (e) => {
         const items = e.clipboardData.items;
@@ -1580,6 +1906,9 @@ const setupDragAndDrop = (zoneId, inputId, zoneType) => {
                 input.value = input.value + (input.value ? '\n' : '') + `[แนบรูปภาพแล้ว]`;
             }
         }
+        if (zoneType !== 'reviewAddReceiver') {
+            scheduleDraftSave({ input: true });
+        }
     });
 };
 
@@ -1588,79 +1917,152 @@ setupDragAndDrop('receiverZone', 'receiverInput', 'receiver');
 setupDragAndDrop('combinedZone', 'combinedInput', 'combined');
 setupDragAndDrop('reviewAddReceiverZone', 'reviewAddReceiverInput', 'reviewAddReceiver');
 
+function clearInputZone(zone) {
+    const input = document.getElementById(zone + 'Input');
+    if (input) input.value = '';
+    clearZoneImage(zone);
+}
+
 document.getElementById('clearSenderBtn').addEventListener('click', () => {
-    document.getElementById('senderInput').value = ''; 
-    senderImageData = null; 
-    const preview = document.getElementById('senderPreview'); 
-    preview.innerHTML = ''; preview.classList.remove('active');
-    saveToCache();
+    clearInputZones(['sender'], {
+        toastMessage: 'ล้างข้อความผู้ส่งแล้ว',
+        statusText: 'ล้างข้อความผู้ส่งแล้ว — ข้อมูลที่วิเคราะห์ไว้ก่อนหน้านี้ยังอยู่'
+    });
 });
 
 document.getElementById('clearReceiverBtn').addEventListener('click', () => {
-    document.getElementById('receiverInput').value = ''; 
-    receiverImageData = null; 
-    const preview = document.getElementById('receiverPreview'); 
-    preview.innerHTML = ''; preview.classList.remove('active');
-    saveToCache();
+    clearInputZones(['receiver'], {
+        toastMessage: 'ล้างข้อความผู้รับแล้ว',
+        statusText: 'ล้างข้อความผู้รับแล้ว — ข้อมูลที่วิเคราะห์ไว้ก่อนหน้านี้ยังอยู่'
+    });
 });
 
 const clearReviewAddReceiverInput = () => {
     const input = document.getElementById('reviewAddReceiverInput');
-    const preview = document.getElementById('reviewAddReceiverPreview');
     if (input) input.value = '';
-    reviewAddReceiverImageData = null;
-    if (preview) {
-        preview.innerHTML = '';
-        preview.classList.remove('active');
-    }
+    clearZoneImage('reviewAddReceiver');
 };
 
 const clearReviewAddReceiverBtn = document.getElementById('clearReviewAddReceiverBtn');
 if (clearReviewAddReceiverBtn) {
     clearReviewAddReceiverBtn.addEventListener('click', () => {
         clearReviewAddReceiverInput();
-        saveToCache();
     });
 }
 
 const clearCombinedBtn = document.getElementById('clearCombinedBtn');
 if (clearCombinedBtn) {
     clearCombinedBtn.addEventListener('click', () => {
-        document.getElementById('combinedInput').value = ''; 
-        combinedImageData = null; 
-        const preview = document.getElementById('combinedPreview'); 
-        if (preview) {
-            preview.innerHTML = ''; preview.classList.remove('active');
-        }
-        saveToCache();
+        clearInputZones(['combined'], {
+            toastMessage: 'ล้างข้อความในช่องรวมแล้ว',
+            statusText: 'ล้างข้อความในช่องรวมแล้ว — ข้อมูลที่วิเคราะห์ไว้ก่อนหน้านี้ยังอยู่'
+        });
     });
 }
 
 document.getElementById('clearAllBtn').addEventListener('click', () => {
-    document.getElementById('clearSenderBtn').click();
-    document.getElementById('clearReceiverBtn').click();
-    const clearCombined = document.getElementById('clearCombinedBtn');
-    if (clearCombined) clearCombined.click();
-    clearCache();
-    document.getElementById('status').innerText = "ล้างข้อมูลเรียบร้อย พร้อมรับงานใหม่!";
-    document.getElementById('status').className = "status-text";
+    clearInputZones(['sender', 'receiver', 'combined'], {
+        toastMessage: 'ล้างข้อความในช่องผู้ส่ง/ผู้รับแล้ว',
+        statusText: 'ล้างข้อความในช่องผู้ส่ง/ผู้รับแล้ว — ข้อมูลที่วิเคราะห์ไว้ก่อนหน้านี้ยังอยู่'
+    });
 });
 
 // ==========================================
 // 🧠 AI EXTRACTION (BULK PROCESSING)
 // ==========================================
+// แยกประเภทของ error จาก Gemini เพื่อแสดงข้อความไทยที่เข้าใจง่าย
+function classifyGeminiError(respStatus, errorObj) {
+    const status = (errorObj && errorObj.status) || '';
+    const message = ((errorObj && errorObj.message) || '').toLowerCase();
+
+    if (respStatus === 401 || respStatus === 403 || status === 'PERMISSION_DENIED' ||
+        /api key|valid api key|invalid.*key/i.test(message)) {
+        return 'invalid_key';
+    }
+    if (/quota|exceeded|billing/i.test(message)) {
+        return 'quota';
+    }
+    if (respStatus === 429 || status === 'RESOURCE_EXHAUSTED' || /rate limit|too many/i.test(message)) {
+        return 'rate_limit';
+    }
+    if (respStatus >= 500) {
+        return 'server';
+    }
+    return 'unknown';
+}
+
+function describeGeminiError(err) {
+    switch (err && err.kind) {
+        case 'invalid_key':
+            return '🔑 API Key ไม่ถูกต้องหรือหมดอายุ — ไปขอคีย์ใหม่ที่ Google AI Studio แล้ววางใหม่ในช่องตั้งค่า';
+        case 'quota':
+            return '⏳ โควต้า Gemini หมดหรือถึงลิมิตแล้ว — รอสักครู่ หรือตรวจสอบบิลลิ่งที่ Google AI Studio';
+        case 'rate_limit':
+            return '🚦 ขอข้อมูลถี่เกินไป — รอสักครู่แล้วลองใหม่';
+        case 'network':
+            return '🌐 เชื่อมต่ออินเทอร์เน็ตไม่ได้ — เช็คเน็ตแล้วลองใหม่';
+        case 'empty_response':
+            return '🤖 AI ตอบกลับมาไม่ครบถ้วน — ลองกดวิเคราะห์ใหม่อีกครั้ง';
+        case 'bad_format':
+            return '🤖 AI ตอบกลับมาไม่เป็นรูปแบบที่ใช้ได้ — ลองกดวิเคราะห์ใหม่อีกครั้ง';
+        case 'server':
+            return '🖥️ เซิร์ฟเวอร์ Gemini ขัดข้องชั่วคราว — ลองใหม่อีกสักครู่';
+        default:
+            return 'เกิดข้อผิดพลาด: ' + (err && err.message ? err.message : 'ไม่ทราบสาเหตุ');
+    }
+}
+
 async function requestGeminiJson(parts, model, apiKey) {
-    const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/${model}:generateContent?key=${apiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contents: [{ parts: parts }] })
-    });
+    let resp;
+    try {
+        resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/${model}:generateContent?key=${apiKey}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ contents: [{ parts: parts }] })
+        });
+    } catch (err) {
+        const e = new Error('network error');
+        e.kind = 'network';
+        throw e;
+    }
 
-    const json = await resp.json();
-    if (json.error) throw new Error(json.error.message);
+    let json;
+    try {
+        json = await resp.json();
+    } catch (err) {
+        const e = new Error('response is not JSON');
+        e.kind = 'server';
+        throw e;
+    }
 
-    const responseText = json.candidates[0].content.parts[0].text;
-    return JSON.parse(responseText.match(/\{[\s\S]*\}/)[0]);
+    if (!resp.ok || json.error) {
+        const e = new Error((json.error && json.error.message) || `HTTP ${resp.status}`);
+        e.kind = classifyGeminiError(resp.status, json.error);
+        throw e;
+    }
+
+    const candidate = json.candidates && json.candidates[0];
+    const part = candidate && candidate.content && candidate.content.parts && candidate.content.parts[0];
+    if (!part || !part.text) {
+        const e = new Error('empty candidates');
+        e.kind = 'empty_response';
+        throw e;
+    }
+
+    const match = part.text.match(/\{[\s\S]*\}/);
+    if (!match) {
+        const e = new Error('no JSON found in response');
+        e.kind = 'bad_format';
+        throw e;
+    }
+
+    try {
+        return JSON.parse(match[0]);
+    } catch (err) {
+        const e = new Error('invalid JSON in response');
+        e.kind = 'bad_format';
+        throw e;
+    }
 }
 
 function openManualReview() {
@@ -1671,9 +2073,7 @@ function openManualReview() {
     renderReceiverCards();
     renderSenderAddressBook();
     renderSavedReceiverDirectory();
-    document.getElementById('inputSection').classList.add('hidden');
-    document.getElementById('reviewSection').classList.add('active');
-    document.getElementById('historySection').style.display = 'none';
+    showReviewSection({ scrollTop: true });
     saveToCache();
 
     const status = document.getElementById('status');
@@ -1684,6 +2084,11 @@ function openManualReview() {
 document.getElementById('skipToReviewBtn')?.addEventListener('click', openManualReview);
 
 document.getElementById('processBtn').addEventListener('click', async () => {
+    if (isProcessing) {
+        showToast('กำลังประมวลผลอยู่ กรุณารอสักครู่');
+        return;
+    }
+
     const apiKey = document.getElementById('apiKey').value.trim();
     const model = document.getElementById('modelSelect').value;
     const status = document.getElementById('status');
@@ -1750,6 +2155,7 @@ document.getElementById('processBtn').addEventListener('click', async () => {
         if (combinedImageData) parts.push({ inlineData: { mimeType: "image/png", data: combinedImageData } });
     }
 
+    setProcessing(true);
     status.innerText = "Gemini กำลังวิเคราะห์แยกรายชื่อลูกค้า..."; 
     status.className = "status-text info";
 
@@ -1757,24 +2163,29 @@ document.getElementById('processBtn').addEventListener('click', async () => {
         const cleanData = await requestGeminiJson(parts, model, apiKey);
 
         populateReviewForm(cleanData);
+        showReviewSection({ scrollTop: true });
         saveToCache();
         saveToHistory(cleanData);
 
-        document.getElementById('inputSection').classList.add('hidden');
-        document.getElementById('reviewSection').classList.add('active');
-        document.getElementById('historySection').style.display = 'none';
-        
-        status.innerText = `✅ วิเคราะห์เสร็จสิ้น! พบลูกค้าทั้งหมด ${cleanData.receivers.length} รายการ`;
+        const receiverCount = Array.isArray(cleanData.receivers) ? cleanData.receivers.length : 0;
+        status.innerText = `✅ วิเคราะห์เสร็จสิ้น! พบลูกค้าทั้งหมด ${receiverCount} รายการ`;
         status.className = "status-text success";
 
     } catch (err) {
         console.error(err);
-        status.innerText = "Error: " + err.message + " (ลองกดวิเคราะห์ใหม่อีกครั้งครับ)"; 
+        status.innerText = describeGeminiError(err);
         status.className = "status-text error";
+    } finally {
+        setProcessing(false);
     }
 });
 
 document.getElementById('addReceiverFromReviewBtn').addEventListener('click', async () => {
+    if (isProcessing) {
+        showToast('กำลังประมวลผลอยู่ กรุณารอสักครู่');
+        return;
+    }
+
     const apiKey = document.getElementById('apiKey').value.trim();
     const model = document.getElementById('modelSelect').value;
     const status = document.getElementById('status');
@@ -1812,6 +2223,7 @@ CRITICAL RULES:
     ];
     if (reviewAddReceiverImageData) parts.push({ inlineData: { mimeType: "image/png", data: reviewAddReceiverImageData } });
 
+    setProcessing(true);
     status.innerText = "Gemini กำลังเพิ่มลูกค้าเข้ารายการ...";
     status.className = "status-text info";
 
@@ -1836,8 +2248,10 @@ CRITICAL RULES:
         status.className = "status-text success";
     } catch (err) {
         console.error(err);
-        status.innerText = "Error: " + err.message + " (ลองเพิ่มใหม่อีกครั้งครับ)";
+        status.innerText = describeGeminiError(err);
         status.className = "status-text error";
+    } finally {
+        setProcessing(false);
     }
 });
 
@@ -1859,6 +2273,7 @@ function populateReviewForm(data) {
     renderReceiverCards();
     renderSenderAddressBook();
     renderSavedReceiverDirectory();
+    resetSenderValidation();
 }
 
 function renderReceiverCards() {
@@ -1980,20 +2395,14 @@ function renderReceiverCards() {
             const idx = parseInt(e.target.getAttribute('data-index'), 10);
             const fieldName = e.target.getAttribute('data-field');
             receiverList[idx][fieldName] = e.target.value;
-            saveToCache();
-            
-            const resultDiv = document.getElementById(`validateResult-${idx}`);
-            if (resultDiv) {
-                resultDiv.style.display = 'none';
-            }
+            scheduleDraftSave({ review: true });
+            resetReceiverValidation(idx);
         });
     });
 }
 
 document.getElementById('cancelBtn').addEventListener('click', () => {
-    document.getElementById('inputSection').classList.remove('hidden'); 
-    document.getElementById('reviewSection').classList.remove('active');
-    document.getElementById('historySection').style.display = 'block';
+    showInputSection({ scrollTop: true });
     renderHistoryUI();
     
     document.getElementById('status').innerText = "แก้ไขข้อมูลได้เลยครับ"; 
@@ -2485,6 +2894,10 @@ function installPrintPreviewTools(printWindow, settings = currentPrintSettings) 
         setSelectedBlock(block);
         block.classList.add('is-dragging');
 
+        if (block.setPointerCapture) {
+            try { block.setPointerCapture(event.pointerId); } catch (e) { /* ignore */ }
+        }
+
         const page = block.closest('.label-page');
         const pxPerMm = getPxPerMm(page);
         const startX = event.clientX;
@@ -2508,6 +2921,9 @@ function installPrintPreviewTools(printWindow, settings = currentPrintSettings) 
 
         function stopDrag() {
             block.classList.remove('is-dragging');
+            if (block.releasePointerCapture) {
+                try { block.releasePointerCapture(event.pointerId); } catch (e) { /* ignore */ }
+            }
             doc.removeEventListener('pointermove', moveBlock);
             doc.removeEventListener('pointerup', stopDrag);
             checkAllLabels();
@@ -2523,6 +2939,10 @@ function installPrintPreviewTools(printWindow, settings = currentPrintSettings) 
         event.stopPropagation();
         setSelectedBlock(block);
         block.classList.add('is-resizing');
+
+        if (block.setPointerCapture) {
+            try { block.setPointerCapture(event.pointerId); } catch (e) { /* ignore */ }
+        }
 
         const page = block.closest('.label-page');
         const pxPerMm = getPxPerMm(page);
@@ -2547,6 +2967,9 @@ function installPrintPreviewTools(printWindow, settings = currentPrintSettings) 
 
         function stopResize() {
             block.classList.remove('is-resizing');
+            if (block.releasePointerCapture) {
+                try { block.releasePointerCapture(event.pointerId); } catch (e) { /* ignore */ }
+            }
             doc.removeEventListener('pointermove', resizeBlock);
             doc.removeEventListener('pointerup', stopResize);
             checkAllLabels();
@@ -2691,7 +3114,9 @@ function installPrintPreviewTools(printWindow, settings = currentPrintSettings) 
     }
 
     printWindow.requestAnimationFrame(() => {
-        setEditMode(false);
+        const toggle = doc.getElementById('editModeToggle');
+        if (toggle) toggle.checked = true;
+        setEditMode(true);
         applyPrintEditorSettings();
         fitAllLabels();
     });
@@ -3108,6 +3533,10 @@ function buildPrintPreviewHTML(settings = currentPrintSettings) {
                 padding-bottom: 1mm;
             }
 
+            .box-diagonal-label .sender-zone .block-text {
+                border-bottom: none;
+            }
+
             .r-name-tel .block-text,
             .r-address-text .block-text {
                 font-weight: 700;
@@ -3282,7 +3711,7 @@ document.getElementById('printBtn')?.addEventListener('click', () => {
 // ==========================================
 // 🚀 INITIALIZATION ON LOAD
 // ==========================================
-function switchTab(tab) {
+function applyTabUI(tab) {
     activeTab = tab;
     const tabSeparateBtn = document.getElementById('tabSeparateBtn');
     const tabCombinedBtn = document.getElementById('tabCombinedBtn');
@@ -3305,15 +3734,45 @@ function switchTab(tab) {
         receiverZone.style.display = 'none';
         combinedZone.style.display = 'block';
     }
-    saveToCache();
+}
+
+function switchTab(tab) {
+    applyTabUI(tab);
+    saveInputDraftNow();
+}
+
+function showReviewSection({ scrollTop = true, persist = true } = {}) {
+    document.getElementById('inputSection').classList.add('hidden');
+    document.getElementById('reviewSection').classList.add('active');
+    document.getElementById('historySection').style.display = 'none';
+    currentView = 'review';
+
+    if (persist) saveReviewDraftNow();
+    if (scrollTop) window.scrollTo(0, 0);
+}
+
+function showInputSection({ scrollTop = true, persist = true } = {}) {
+    document.getElementById('inputSection').classList.remove('hidden');
+    document.getElementById('reviewSection').classList.remove('active');
+    document.getElementById('historySection').style.display = 'block';
+    currentView = 'input';
+
+    if (persist) saveReviewDraftNow();
+    if (scrollTop) window.scrollTo(0, 0);
 }
 
 document.addEventListener('DOMContentLoaded', () => {
-    loadCache();
+    loadDrafts();
     setupAutoCache();
     renderHistoryUI();
     renderSenderAddressBook();
     renderSavedReceiverDirectory();
+
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') flushDraftSave();
+    });
+    window.addEventListener('pagehide', flushDraftSave);
+    window.addEventListener('beforeunload', flushDraftSave);
 
     const receiverDirectorySearch = document.getElementById('receiverDirectorySearch');
     if (receiverDirectorySearch) {
