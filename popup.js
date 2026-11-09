@@ -1694,6 +1694,10 @@ const modelDefinitions = [
     { key: 'gemini-3.8-flash',       label: '⚡ Gemini 3.8 Flash (เร็วสุด - ช่วงนี้ติดโหลดสูง)' }
 ];
 
+// โมเดลที่ผู้ใช้เลือกไว้เอง (หรือ default) — เป็นจุดเริ่มต้นของทุกการวิเคราะห์
+// การสลับอัตโนมัติตอน retry เป็นแค่ชั่วคราว ไม่เปลี่ยนค่านี้
+let currentPreferredModel = null;
+
 function populateModelSelect(savedModel) {
     const select = document.getElementById('modelSelect');
     const statusDot = document.getElementById('modelStatus');
@@ -1720,6 +1724,7 @@ function populateModelSelect(savedModel) {
 
     if (chosen) {
         select.value = chosen.value;
+        currentPreferredModel = chosen.value;
         if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
             chrome.storage.local.set({ selectedModel: chosen.value });
         }
@@ -1747,6 +1752,7 @@ document.getElementById('apiKey').addEventListener('input', (e) => {
 });
 
 document.getElementById('modelSelect').addEventListener('change', (e) => {
+    currentPreferredModel = e.target.value;
     if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
         chrome.storage.local.set({ selectedModel: e.target.value });
     }
@@ -2003,7 +2009,7 @@ function getModelShortName(value) {
     return String(value).split('/').pop();
 }
 
-// สลับไปโมเดลถัดไปในลิสต์เมื่อวิเคราะห์ล้มเหลว แล้วบันทึกลง storage
+// สลับไปโมเดลถัดไปในลิสต์เมื่อวิเคราะห์ล้มเหลว (ชั่วคราว ไม่บันทึก storage)
 // คืน { oldModel, newModel } เมื่อสลับสำเร็จ, คืน null เมื่อสลับไม่ได้ (มีโมเดลเดียว)
 function switchToNextModel() {
     const select = document.getElementById('modelSelect');
@@ -2020,9 +2026,6 @@ function switchToNextModel() {
     const newModel = getModelShortName(nextOption.value);
 
     select.value = nextOption.value;
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.set({ selectedModel: nextOption.value });
-    }
 
     return { oldModel, newModel };
 }
@@ -2178,6 +2181,7 @@ document.getElementById('processBtn').addEventListener('click', async () => {
         status.className = "status-text success";
     } finally {
         clearInterval(tickId);
+        if (currentPreferredModel) modelSelect.value = currentPreferredModel; // reset กลับจุดเริ่มต้น
         setProcessing(false);
     }
 });
@@ -2295,6 +2299,7 @@ CRITICAL RULES:
         status.className = "status-text success";
     } finally {
         clearInterval(tickId);
+        if (currentPreferredModel) modelSelect.value = currentPreferredModel; // reset กลับจุดเริ่มต้น
         setProcessing(false);
     }
 });
