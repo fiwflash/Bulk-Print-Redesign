@@ -1684,116 +1684,80 @@ function renderSavedReceiverDirectory() {
 // ==========================================
 // ⚙️ INITIALIZATION & SETTINGS
 // ==========================================
-if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-    chrome.storage.local.get(['geminiApiKey', 'selectedModel'], (result) => {
-        if (result.geminiApiKey) { 
-            document.getElementById('apiKey').value = result.geminiApiKey; 
-            fetchAvailableModels(result.geminiApiKey, result.selectedModel); 
-        }
-    });
-}
+// รายการโมเดล Gemini แบบ static list ที่เรียกใช้งานได้บน Free Tier และอ่านภาพได้ (vision)
+// เรียงตามความเสถียร+ความเร็วจากผลทดสอบจริง โดยวาง 3.5 Flash-Lite (เสถียร+เร็วสุด) ไว้ตำแหน่งแรกเป็น default
+const modelDefinitions = [
+    { key: 'gemini-3.5-flash-lite',  label: '🍃 Gemini 3.5 Flash-Lite (แนะนำ - เสถียรและเร็วสุด)' },
+    { key: 'gemini-2.5-flash-lite',  label: '🟢 Gemini 2.5 Flash-Lite (fallback - ประหยัด)' },
+    { key: 'gemini-2.5-flash',       label: '🔵 Gemini 2.5 Flash (fallback)' },
+    { key: 'gemini-3.6-flash',       label: '🚀 Gemini 3.6 Flash (แม่นยำ - ช้า/ติดโหลดเป็นระยะ)' },
+    { key: 'gemini-3.8-flash',       label: '⚡ Gemini 3.8 Flash (เร็วสุด - ช่วงนี้ติดโหลดสูง)' }
+];
 
-async function fetchAvailableModels(key, savedModel) {
+function populateModelSelect(savedModel) {
     const select = document.getElementById('modelSelect');
     const statusDot = document.getElementById('modelStatus');
-    try {
-        const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`);
-        if (!response.ok) throw new Error("API Key Invalid");
-        const data = await response.json();
-        const models = data.models.filter(m => m.supportedGenerationMethods.includes('generateContent'));
-        select.innerHTML = '';
+    if (!select) return;
 
-        // Define preferred model keys, human-friendly labels, and matching priority
-        const modelDefinitions = [
-            { key: 'gemini-2.5-flash-lite', label: '🍃 Gemini 2.5 Flash-Lite (แนะนำ - ประหยัดค่าใช้จ่ายสูงสุด)' },
-            { key: 'gemini-2.5-flash', label: '⚡ Gemini 2.5 Flash (เร็วและแม่นยำ)' },
-            { key: 'gemini-2.0-flash-lite', label: '🍃 Gemini 2.0 Flash-Lite (ประหยัดค่าใช้จ่าย)' },
-            { key: 'gemini-2.0-flash', label: '🚀 Gemini 2.0 Flash (ทำงานเร็วและเสถียร)' },
-            { key: 'gemini-2.5-pro', label: '🧠 Gemini 2.5 Pro (ฉลาดสุด - เหมาะกับรูปไม่ชัด/ลายมือ)' },
-            { key: 'gemini-3.1-flash', label: '✨ Gemini 3.1 Flash (รุ่นทดสอบ)' },
-            { key: 'gemini-3.1-pro', label: '🔮 Gemini 3.1 Pro (รุ่นทดสอบ)' },
-            { key: 'gemini-3-flash', label: '✨ Gemini 3 Flash (รุ่นทดสอบ)' },
-            { key: 'gemini-3-pro', label: '🔮 Gemini 3 Pro (รุ่นทดสอบ)' },
-            { key: 'gemini-flash-latest', label: '⚡ Gemini Flash (Latest)' },
-            { key: 'gemini-pro-latest', label: '🧠 Gemini Pro (Latest)' },
-            { key: 'gemini-1.5-flash', label: '⚡ Gemini 1.5 Flash (รุ่นคลาสสิก)' },
-            { key: 'gemini-1.5-pro', label: '🧠 Gemini 1.5 Pro (รุ่นคลาสสิก)' }
-        ];
+    select.innerHTML = '';
+    modelDefinitions.forEach((def) => {
+        const opt = document.createElement('option');
+        opt.value = 'models/' + def.key;   // resource name สำหรับเรียก :generateContent
+        opt.innerText = def.label;
+        select.appendChild(opt);
+    });
 
-        let mappedModels = [];
-        models.forEach(model => {
-            const nameLower = model.name.toLowerCase();
-            // Find the first matching definition (specific key matches like -lite first)
-            const defIndex = modelDefinitions.findIndex(def => nameLower.includes(def.key));
-            if (defIndex !== -1) {
-                mappedModels.push({
-                    model: model,
-                    def: modelDefinitions[defIndex],
-                    index: defIndex
-                });
-            }
-        });
-
-        // Sort by the order in modelDefinitions
-        mappedModels.sort((a, b) => a.index - b.index);
-
-        if (mappedModels.length === 0) {
-            // Fallback: If no matches, show all generateContent models
-            models.forEach(model => {
-                const opt = document.createElement('option'); 
-                opt.value = model.name; 
-                opt.innerText = model.displayName || model.name.split('/')[1];
-                if (model.name === savedModel) opt.selected = true;
-                select.appendChild(opt);
-            });
-        } else {
-            mappedModels.forEach(item => {
-                const opt = document.createElement('option');
-                opt.value = item.model.name;
-                opt.innerText = item.def.label;
-                if (item.model.name === savedModel) opt.selected = true;
-                select.appendChild(opt);
-            });
-
-            // Set default if none selected
-            if (!savedModel && select.options.length > 0) {
-                // Find and select 2.5 Flash-Lite if available, otherwise first item
-                const flashLiteOpt = Array.from(select.options).find(o => o.value.includes('gemini-2.5-flash-lite'));
-                if (flashLiteOpt) {
-                    flashLiteOpt.selected = true;
-                    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-                        chrome.storage.local.set({ selectedModel: flashLiteOpt.value });
-                    }
-                } else {
-                    select.options[0].selected = true;
-                    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
-                        chrome.storage.local.set({ selectedModel: select.options[0].value });
-                    }
-                }
-            }
-        }
-        statusDot.className = 'status-dot online';
-    } catch (err) {
-        select.innerHTML = '<option value="">Check API Key</option>'; 
-        statusDot.className = 'status-dot offline';
+    // ลำดับการเลือก: ค่าเดิม > default 3.5-lite > ตัวแรก
+    let chosen = null;
+    if (savedModel) {
+        chosen = Array.from(select.options).find((o) => o.value === savedModel)
+            || Array.from(select.options).find((o) => o.value.includes(getModelShortName(savedModel)));
     }
+    if (!chosen) {
+        chosen = Array.from(select.options).find((o) => o.value.includes('gemini-3.5-flash-lite'));
+    }
+    if (!chosen && select.options.length > 0) chosen = select.options[0];
+
+    if (chosen) {
+        select.value = chosen.value;
+        if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+            chrome.storage.local.set({ selectedModel: chosen.value });
+        }
+    }
+
+    if (statusDot) statusDot.className = 'status-dot online';
+}
+
+if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+    chrome.storage.local.get(['geminiApiKey', 'selectedModel'], (result) => {
+        populateModelSelect(result.selectedModel);
+        if (result.geminiApiKey) {
+            document.getElementById('apiKey').value = result.geminiApiKey;
+        }
+    });
+} else {
+    populateModelSelect();
 }
 
 document.getElementById('apiKey').addEventListener('input', (e) => {
     const key = e.target.value.trim();
-    if (key) { 
-        if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) chrome.storage.local.set({ geminiApiKey: key }); 
-        fetchAvailableModels(key); 
+    if (key && typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({ geminiApiKey: key });
     }
 });
 
 document.getElementById('modelSelect').addEventListener('change', (e) => {
-    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) chrome.storage.local.set({ selectedModel: e.target.value });
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({ selectedModel: e.target.value });
+    }
 });
 
 document.getElementById('refreshModels').addEventListener('click', () => {
-    const key = document.getElementById('apiKey').value.trim(); 
-    if (key) fetchAvailableModels(key);
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.get(['selectedModel'], (result) => populateModelSelect(result.selectedModel));
+    } else {
+        populateModelSelect();
+    }
 });
 
 // ==========================================
@@ -1970,99 +1934,97 @@ document.getElementById('clearAllBtn').addEventListener('click', () => {
 // ==========================================
 // 🧠 AI EXTRACTION (BULK PROCESSING)
 // ==========================================
-// แยกประเภทของ error จาก Gemini เพื่อแสดงข้อความไทยที่เข้าใจง่าย
-function classifyGeminiError(respStatus, errorObj) {
-    const status = (errorObj && errorObj.status) || '';
-    const message = ((errorObj && errorObj.message) || '').toLowerCase();
+const AI_TIMEOUT_MS = 8000; // หมดเวลารอการตอบกลับจาก Gemini (หน่วยมิลลิวินาที) — ปรับได้
 
-    if (respStatus === 401 || respStatus === 403 || status === 'PERMISSION_DENIED' ||
-        /api key|valid api key|invalid.*key/i.test(message)) {
-        return 'invalid_key';
-    }
-    if (/quota|exceeded|billing/i.test(message)) {
-        return 'quota';
-    }
-    if (respStatus === 429 || status === 'RESOURCE_EXHAUSTED' || /rate limit|too many/i.test(message)) {
-        return 'rate_limit';
-    }
-    if (respStatus >= 500) {
-        return 'server';
-    }
-    return 'unknown';
+// ตรวจว่า error ที่ได้จาก Gemini เป็น "API Key ผิด/หมดอายุ" หรือไม่
+function isInvalidKeyError(error) {
+    if (!error) return false;
+    const status = String(error.status || '');
+    const message = String(error.message || '');
+    return status === 'INVALID_ARGUMENT' || status === 'UNAUTHENTICATED' || status === 'PERMISSION_DENIED'
+        || /api key|invalid key|api_key|not valid|expired/i.test(message);
 }
 
+// แปลง error (err.kind) เป็นข้อความไทยที่เข้าใจง่าย
 function describeGeminiError(err) {
-    switch (err && err.kind) {
-        case 'invalid_key':
-            return '🔑 API Key ไม่ถูกต้องหรือหมดอายุ — ไปขอคีย์ใหม่ที่ Google AI Studio แล้ววางใหม่ในช่องตั้งค่า';
-        case 'quota':
-            return '⏳ โควต้า Gemini หมดหรือถึงลิมิตแล้ว — รอสักครู่ หรือตรวจสอบบิลลิ่งที่ Google AI Studio';
-        case 'rate_limit':
-            return '🚦 ขอข้อมูลถี่เกินไป — รอสักครู่แล้วลองใหม่';
-        case 'network':
-            return '🌐 เชื่อมต่ออินเทอร์เน็ตไม่ได้ — เช็คเน็ตแล้วลองใหม่';
-        case 'empty_response':
-            return '🤖 AI ตอบกลับมาไม่ครบถ้วน — ลองกดวิเคราะห์ใหม่อีกครั้ง';
-        case 'bad_format':
-            return '🤖 AI ตอบกลับมาไม่เป็นรูปแบบที่ใช้ได้ — ลองกดวิเคราะห์ใหม่อีกครั้ง';
-        case 'server':
-            return '🖥️ เซิร์ฟเวอร์ Gemini ขัดข้องชั่วคราว — ลองใหม่อีกสักครู่';
-        default:
-            return 'เกิดข้อผิดพลาด: ' + (err && err.message ? err.message : 'ไม่ทราบสาเหตุ');
-    }
+    if (!err) return 'เกิดข้อผิดพลาดในการวิเคราะห์ข้อมูล';
+    if (err.kind === 'invalid_key') return '🔑 API Key ไม่ถูกต้องหรือหมดอายุ กรุณาตรวจสอบ API Key แล้วลองใหม่อีกครั้ง';
+    if (err.kind === 'timeout')      return '⏱️ หมดเวลารอการตอบกลับจาก Gemini (โมเดลอาจกำลังโหลดสูง)';
+    if (err.kind === 'parse_error')  return '⚠️ AI ส่งข้อมูลกลับมาในรูปแบบที่ไม่ถูกต้อง';
+    const msg = (err && err.message) ? err.message : String(err);
+    return 'เกิดข้อผิดพลาดในการวิเคราะห์: ' + msg;
 }
 
-async function requestGeminiJson(parts, model, apiKey) {
+// เรียก Gemini (REST) พร้อม timeout + AbortController และจำแนก error เป็น err.kind
+async function callGeminiAndParse(model, apiKey, parts) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), AI_TIMEOUT_MS);
     let resp;
     try {
         resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/${model}:generateContent?key=${apiKey}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ contents: [{ parts: parts }] })
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{ parts: parts }],
+                generationConfig: { responseMimeType: "application/json" }
+            }),
+            signal: controller.signal
         });
-    } catch (err) {
-        const e = new Error('network error');
-        e.kind = 'network';
-        throw e;
+    } catch (fetchErr) {
+        if (fetchErr && fetchErr.name === 'AbortError') {
+            const err = new Error('หมดเวลารอการตอบกลับจาก Gemini (โมเดลอาจกำลังโหลดสูง)');
+            err.kind = 'timeout';
+            throw err;
+        }
+        throw fetchErr;
+    } finally {
+        clearTimeout(timeoutId);
     }
 
-    let json;
+    const json = await resp.json();
+    if (json.error) {
+        const err = new Error(json.error.message);
+        err.kind = isInvalidKeyError(json.error) ? 'invalid_key' : 'api_error';
+        throw err;
+    }
+
+    const responseText = json.candidates[0].content.parts[0].text;
     try {
-        json = await resp.json();
-    } catch (err) {
-        const e = new Error('response is not JSON');
-        e.kind = 'server';
-        throw e;
+        const cleanText = responseText.replace(/```json/gi, '').replace(/```/gi, '').trim();
+        return JSON.parse(cleanText);
+    } catch (parseErr) {
+        const err = new Error("AI ส่งข้อมูลผิดพลาด");
+        err.kind = 'parse_error';
+        throw err;
+    }
+}
+
+function getModelShortName(value) {
+    if (!value) return '';
+    return String(value).split('/').pop();
+}
+
+// สลับไปโมเดลถัดไปในลิสต์เมื่อวิเคราะห์ล้มเหลว แล้วบันทึกลง storage
+// คืน { oldModel, newModel } เมื่อสลับสำเร็จ, คืน null เมื่อสลับไม่ได้ (มีโมเดลเดียว)
+function switchToNextModel() {
+    const select = document.getElementById('modelSelect');
+    if (!select || select.options.length === 0) return null;
+
+    const currentIndex = select.selectedIndex >= 0 ? select.selectedIndex : 0;
+    const nextIndex = (currentIndex + 1) % select.options.length;
+    const nextOption = select.options[nextIndex];
+
+    // มีตัวเลือกเดียว = สลับไม่ได้
+    if (nextIndex === currentIndex || !nextOption || nextOption.value === select.value) return null;
+
+    const oldModel = getModelShortName(select.value);
+    const newModel = getModelShortName(nextOption.value);
+
+    select.value = nextOption.value;
+    if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.set({ selectedModel: nextOption.value });
     }
 
-    if (!resp.ok || json.error) {
-        const e = new Error((json.error && json.error.message) || `HTTP ${resp.status}`);
-        e.kind = classifyGeminiError(resp.status, json.error);
-        throw e;
-    }
-
-    const candidate = json.candidates && json.candidates[0];
-    const part = candidate && candidate.content && candidate.content.parts && candidate.content.parts[0];
-    if (!part || !part.text) {
-        const e = new Error('empty candidates');
-        e.kind = 'empty_response';
-        throw e;
-    }
-
-    const match = part.text.match(/\{[\s\S]*\}/);
-    if (!match) {
-        const e = new Error('no JSON found in response');
-        e.kind = 'bad_format';
-        throw e;
-    }
-
-    try {
-        return JSON.parse(match[0]);
-    } catch (err) {
-        const e = new Error('invalid JSON in response');
-        e.kind = 'bad_format';
-        throw e;
-    }
+    return { oldModel, newModel };
 }
 
 function openManualReview() {
@@ -2156,11 +2118,55 @@ document.getElementById('processBtn').addEventListener('click', async () => {
     }
 
     setProcessing(true);
-    status.innerText = "Gemini กำลังวิเคราะห์แยกรายชื่อลูกค้า..."; 
-    status.className = "status-text info";
+
+    const modelSelect = document.getElementById('modelSelect');
+    const modelValues = Array.from(modelSelect.options).map(o => o.value).filter(Boolean);
+    const totalModels = modelValues.length;
+
+    const startedAt = Date.now();
+    let currentAttemptLabel = '';
+    const tickId = setInterval(() => {
+        if (status.className === "status-text info") {
+            const elapsed = Math.round((Date.now() - startedAt) / 1000);
+            status.innerText = `⏳ ${currentAttemptLabel} · ${elapsed} วินาที`;
+        }
+    }, 1000);
+
+    let cleanData = null;
+    let lastError = null;
+    const triedNames = [];
 
     try {
-        const cleanData = await requestGeminiJson(parts, model, apiKey);
+        for (let attempt = 0; attempt < totalModels; attempt++) {
+            const currentModel = modelSelect.value;
+            const shortName = getModelShortName(currentModel);
+            triedNames.push(shortName);
+
+            currentAttemptLabel = `กำลังวิเคราะห์ด้วย ${shortName}... (${attempt + 1}/${totalModels})`;
+            status.className = "status-text info";
+            status.innerText = `⏳ ${currentAttemptLabel} · 0 วินาที`;
+
+            try {
+                cleanData = await callGeminiAndParse(currentModel, apiKey, parts);
+                lastError = null;
+                break; // สำเร็จ
+            } catch (err) {
+                lastError = err;
+                if (err && err.kind === 'invalid_key') break; // key ผิด → หยุดทันที
+                const switched = switchToNextModel();
+                if (!switched) break; // ครบทุกโมเดลแล้ว
+            }
+        }
+
+        if (cleanData === null) {
+            status.className = "status-text error";
+            if (lastError && lastError.kind === 'invalid_key') {
+                status.innerText = describeGeminiError(lastError);
+            } else {
+                status.innerText = `${describeGeminiError(lastError)}\n❌ ลองครบทุกโมเดลแล้ว (${triedNames.join(' → ')}) ยังไม่สำเร็จ กรุณาลองใหม่อีกครั้ง`;
+            }
+            return;
+        }
 
         populateReviewForm(cleanData);
         showReviewSection({ scrollTop: true });
@@ -2170,12 +2176,8 @@ document.getElementById('processBtn').addEventListener('click', async () => {
         const receiverCount = Array.isArray(cleanData.receivers) ? cleanData.receivers.length : 0;
         status.innerText = `✅ วิเคราะห์เสร็จสิ้น! พบลูกค้าทั้งหมด ${receiverCount} รายการ`;
         status.className = "status-text success";
-
-    } catch (err) {
-        console.error(err);
-        status.innerText = describeGeminiError(err);
-        status.className = "status-text error";
     } finally {
+        clearInterval(tickId);
         setProcessing(false);
     }
 });
@@ -2224,11 +2226,56 @@ CRITICAL RULES:
     if (reviewAddReceiverImageData) parts.push({ inlineData: { mimeType: "image/png", data: reviewAddReceiverImageData } });
 
     setProcessing(true);
-    status.innerText = "Gemini กำลังเพิ่มลูกค้าเข้ารายการ...";
-    status.className = "status-text info";
+
+    const modelSelect = document.getElementById('modelSelect');
+    const modelValues = Array.from(modelSelect.options).map(o => o.value).filter(Boolean);
+    const totalModels = modelValues.length;
+
+    const startedAt = Date.now();
+    let currentAttemptLabel = '';
+    const tickId = setInterval(() => {
+        if (status.className === "status-text info") {
+            const elapsed = Math.round((Date.now() - startedAt) / 1000);
+            status.innerText = `⏳ ${currentAttemptLabel} · ${elapsed} วินาที`;
+        }
+    }, 1000);
+
+    let cleanData = null;
+    let lastError = null;
+    const triedNames = [];
 
     try {
-        const cleanData = await requestGeminiJson(parts, model, apiKey);
+        for (let attempt = 0; attempt < totalModels; attempt++) {
+            const currentModel = modelSelect.value;
+            const shortName = getModelShortName(currentModel);
+            triedNames.push(shortName);
+
+            currentAttemptLabel = `กำลังเพิ่มลูกค้าด้วย ${shortName}... (${attempt + 1}/${totalModels})`;
+            status.className = "status-text info";
+            status.innerText = `⏳ ${currentAttemptLabel} · 0 วินาที`;
+
+            try {
+                cleanData = await callGeminiAndParse(currentModel, apiKey, parts);
+                lastError = null;
+                break; // สำเร็จ
+            } catch (err) {
+                lastError = err;
+                if (err && err.kind === 'invalid_key') break; // key ผิด → หยุดทันที
+                const switched = switchToNextModel();
+                if (!switched) break; // ครบทุกโมเดลแล้ว
+            }
+        }
+
+        if (cleanData === null) {
+            status.className = "status-text error";
+            if (lastError && lastError.kind === 'invalid_key') {
+                status.innerText = describeGeminiError(lastError);
+            } else {
+                status.innerText = `${describeGeminiError(lastError)}\n❌ ลองครบทุกโมเดลแล้ว (${triedNames.join(' → ')}) ยังไม่สำเร็จ กรุณาลองใหม่อีกครั้ง`;
+            }
+            return;
+        }
+
         const addedReceivers = (cleanData.receivers || []).filter(r =>
             r && (r.name || r.tel || r.address || r.postcode || r.note)
         );
@@ -2246,11 +2293,8 @@ CRITICAL RULES:
 
         status.innerText = `✅ เพิ่มลูกค้าใหม่ ${addedReceivers.length} รายการแล้ว รวมทั้งหมด ${receiverList.length} รายการ`;
         status.className = "status-text success";
-    } catch (err) {
-        console.error(err);
-        status.innerText = describeGeminiError(err);
-        status.className = "status-text error";
     } finally {
+        clearInterval(tickId);
         setProcessing(false);
     }
 });
